@@ -115,18 +115,6 @@
           $("#transcript").append(processedData);
          }
       });
-
-
-
-      var blob = new Blob([dataview], {type: "audio/wav"});
-      url = window.URL.createObjectURL(blob);
-      var a = document.createElement("a");
-      document.body.appendChild(a);
-      a.style = "display: none";
-      a.href = url;
-      a.download = name;
-      a.click();
-      window.URL.revokeObjectURL(url);
     }
   }
 
