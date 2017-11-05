@@ -1,0 +1,224 @@
+<script
+  src="https://code.jquery.com/jquery-2.2.4.min.js"
+  integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="
+  crossorigin="anonymous"></script>
+
+<html>
+<body>
+<button id="recordaudio" onclick="startRecording();">Record</button>
+<br>
+<button id="stop" onclick="stopRecording();">Stop</button>
+<ul id="transcript">
+</ul>
+<script>
+  var input;
+  var processor;
+  var context;
+  var recLenghFrames;
+  var recBuffersL = [];
+  var recBuffersR = [];
+  var startTime;
+  function startRecording() {
+  	recBuffersL = [];
+    recBuffersR = [];
+    var d = new Date();
+    startTime = d.getTime();
+    recLengthFrames = 0;
+    var AudioContext = window.AudioContext || window.webkitAudioContext;    
+    context = new AudioContext();
+    console.log(context);
+    processor = context.createScriptProcessor(4096, 2, 2);
+    processor.connect(context.destination);
+
+    var handleSuccess = function (stream) {
+      input = context.createMediaStreamSource(stream);
+      input.connect(processor);
+
+      processor.onaudioprocess = function (e) {
+        var buf = e.inputBuffer.getChannelData(0).slice(0);
+        recBuffersL.push(buf);
+        recLengthFrames += buf.length;
+
+        var d2 = new Date();
+        currentTime = d2.getTime();
+        console.log(Math.abs(currentTime-startTime));
+        if (Math.abs(currentTime-startTime) > 30000) {
+          analyzeAudio();
+        }
+      };
+    };
+
+    navigator.mediaDevices.getUserMedia({audio: true, video: false})
+      .then(handleSuccess);
+  }
+
+  function stopRecording() {
+    console.log(recLengthFrames);
+  	processor.disconnect(context.destination);
+    var bufferL = mergeBuffers(recBuffersL, recLengthFrames);
+    downsampleBuffer(bufferL,44100,16000);
+  }
+
+  function analyzeAudio() {
+    var bufferL = mergeBuffers(recBuffersL, recLengthFrames);
+    recBuffersL = [];
+    recBuffersR = [];
+    var d = new Date();
+    startTime = d.getTime();
+    recLengthFrames = 0;
+    downsampleBuffer(bufferL,44100,16000);
+  }
+
+  var downsampleBuffer = function (buffer, sampleRate, outSampleRate) {
+    console.log("downsampleBuffer");
+
+    var durationInSamples = buffer.length;
+    var o = new OfflineAudioContext(1, durationInSamples*outSampleRate/sampleRate, outSampleRate);//mono
+    var channels = 1;
+    /* Get an empty AudioBuffer at 44100Hz */
+    var b = o.createBuffer(channels, durationInSamples, sampleRate);
+
+    /* Copy your data in the AudioBuffer */
+    var buf = b.getChannelData(0);
+    for (var i = 0; i < durationInSamples; i++) {
+       buf[i] = buffer[i];
+    }
+
+    var source = o.createBufferSource();
+    source.buffer = b;
+    source.connect(o.destination);
+    source.start(0);
+    o.startRendering();
+    o.oncomplete = function(audiobuffer) {
+      console.log("done!!");
+      console.log(audiobuffer.renderedBuffer);
+      var buf16kfloat = audiobuffer.renderedBuffer.getChannelData(0);
+
+      var dataview = encodeWAV(buf16kfloat, true);
+
+      var uploadFormData = new FormData();
+      uploadFormData.append("uid","666_3");
+      uploadFormData.append("image", new Blob([dataview.buffer], {type:"application/octet-stream"}));
+
+
+      $.ajax({
+         url: 'http://34.209.165.166/',
+         type: 'POST',
+         contentType: false,  
+         cache : false,
+         data: uploadFormData,
+         processData: false,     
+         success: function(data, status, xhttp)
+         {
+          console.log(data);
+          var processedData = parseServer(data);
+          $("#transcript").append(processedData);
+         }
+      });
+
+
+
+      var blob = new Blob([dataview], {type: "audio/wav"});
+      url = window.URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      document.body.appendChild(a);
+      a.style = "display: none";
+      a.href = url;
+      a.download = name;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    }
+  }
+
+  function parseServer(response) {
+    var out = "";
+    var sentences = response.split("-");
+    sentences.forEach(function(string) {
+        var stringSplit = string.split(";");
+        var sentence = stringSplit[0];
+        var da = stringSplit[1];
+        if(stringSplit.length > 1) {
+          out += "<p><strong>"+da+":</strong> "+sentence+"</p>"
+        }
+    });
+    return out;
+  }
+
+  function interleave(inputL, inputR){
+    var length = inputL.length + inputR.length;
+    var result = new Float32Array(length);
+
+    var index = 0,
+      inputIndex = 0;
+
+    while (index < length){
+      result[index++] = inputL[inputIndex];
+      result[index++] = inputR[inputIndex];
+      inputIndex++;
+    }
+    return result;
+  }
+
+  function mergeBuffers(recBuffers, recLength){
+    var result = new Float32Array(recLength);
+    var offset = 0;
+    for (var i = 0; i < recBuffers.length; i++){
+      result.set(recBuffers[i], offset);
+      offset += recBuffers[i].length;
+    }
+    return result;
+  }
+
+function floatTo16BitPCM(output, offset, input){
+  for (var i = 0; i < input.length; i++, offset+=2){
+    var s = Math.max(-1, Math.min(1, input[i]));
+    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+}
+
+function writeString(view, offset, string){
+  for (var i = 0; i < string.length; i++){
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+var sampleRate = 16000;
+function encodeWAV(samples, mono){
+  var buffer = new ArrayBuffer(44 + samples.length * 2);
+  var view = new DataView(buffer);
+
+  /* RIFF identifier */
+  writeString(view, 0, 'RIFF');
+  /* file length */
+  view.setUint32(4, 32 + samples.length * 2, true);
+  /* RIFF type */
+  writeString(view, 8, 'WAVE');
+  /* format chunk identifier */
+  writeString(view, 12, 'fmt ');
+  /* format chunk length */
+  view.setUint32(16, 16, true);
+  /* sample format (raw) */
+  view.setUint16(20, 1, true);
+  /* channel count */
+  view.setUint16(22, mono?1:2, true);
+  /* sample rate */
+  view.setUint32(24, sampleRate, true);
+  /* byte rate (sample rate * block align) */
+  view.setUint32(28, sampleRate * 4, true);
+  /* block align (channel count * bytes per sample) */
+  view.setUint16(32, 4, true);
+  /* bits per sample */
+  view.setUint16(34, 16, true);
+  /* data chunk identifier */
+  writeString(view, 36, 'data');
+  /* data chunk length */
+  view.setUint32(40, samples.length * 2, true);
+
+  floatTo16BitPCM(view, 44, samples);
+
+  return view;
+}
+
+</script>
+</body>
+</html>
